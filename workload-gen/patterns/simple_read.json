@@ -1,0 +1,51 @@
+{
+  "name": "simple_sequential_read",
+  "description": "Simple sequential read pattern for testing",
+  "memory_size": 1048576,
+  "device_path": null,
+  "use_mmap": false,
+  "duration_ns": 5000000000,
+  "num_threads": 2,
+  "operations": [
+    {
+      "op_type": "Read",
+      "address": 0,
+      "size": 4096,
+      "cpu_cycles": null,
+      "thread_id": 0,
+      "timestamp_ns": 0
+    },
+    {
+      "op_type": "Read", 
+      "address": 4096,
+      "size": 4096,
+      "cpu_cycles": null,
+      "thread_id": 0,
+      "timestamp_ns": 1000000
+    },
+    {
+      "op_type": "Read",
+      "address": 8192,
+      "size": 4096,
+      "cpu_cycles": null,
+      "thread_id": 1,
+      "timestamp_ns": 500000
+    },
+    {
+      "op_type": "Write",
+      "address": 12288,
+      "size": 4096,
+      "cpu_cycles": null,
+      "thread_id": 1,
+      "timestamp_ns": 2000000
+    },
+    {
+      "op_type": "Cpu",
+      "address": null,
+      "size": null,
+      "cpu_cycles": 10000,
+      "thread_id": 0,
+      "timestamp_ns": 3000000
+    }
+  ]
+} 

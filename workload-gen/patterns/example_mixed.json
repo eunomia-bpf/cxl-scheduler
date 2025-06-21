@@ -1,0 +1,62 @@
+{
+  "workload_name": "mixed_realistic",
+  "memory_config": {
+    "total_size": "10MB",
+    "base_address": 0,
+    "initialization": "random",
+    "device_path": null,
+    "use_mmap": false
+  },
+  "execution_config": {
+    "duration": 10,
+    "num_threads": 4,
+    "thread_affinity": "none",
+    "numa_node": null
+  },
+  "patterns": [
+    {
+      "name": "sequential_read",
+      "pattern_type": "sequential",
+      "weight": 0.3,
+      "params": {
+        "operation": "read",
+        "start_address": 0,
+        "end_address": "5MB",
+        "block_size": 4096,
+        "stride": 4096
+      }
+    },
+    {
+      "name": "random_mixed",
+      "pattern_type": "random",
+      "weight": 0.4,
+      "params": {
+        "operation": "mixed",
+        "address_range": ["5MB", "8MB"],
+        "block_sizes": [1024, 4096, 8192],
+        "block_size_weights": [0.2, 0.6, 0.2],
+        "read_write_ratio": 0.7
+      }
+    },
+    {
+      "name": "hotspot_access",
+      "pattern_type": "hotspot",
+      "weight": 0.3,
+      "params": {
+        "hot_region_size": "1MB",
+        "hot_region_ratio": 0.8,
+        "read_write_ratio": 0.6,
+        "block_size": 4096
+      }
+    }
+  ],
+  "phases": [
+    {
+      "name": "mixed_phase",
+      "duration": 10,
+      "rate_limit": "unlimited",
+      "thread_multiplier": null,
+      "active_patterns": ["sequential_read", "random_mixed", "hotspot_access"]
+    }
+  ]
+} 
