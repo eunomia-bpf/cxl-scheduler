@@ -1,0 +1,139 @@
+# Compiled executables
+double_bandwidth
+cxl_memory_test
+double_bandwidth_thread
+
+# Object files
+*.o
+*.obj
+*.ko
+*.elf
+
+# Shared libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Static libraries
+*.a
+*.lib
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Build directories
+build/
+debug/
+release/
+bin/
+obj/
+
+# Core dumps
+core.*
+vgcore.*
+
+# Temporary files
+*~
+*.swp
+*.swo
+.*.swp
+.*.swo
+*.tmp
+*.temp
+
+# IDE files
+.vscode/
+.idea/
+*.vcxproj*
+*.sln
+*.suo
+*.user
+
+# Editor files
+*.sublime-*
+.project
+.cproject
+.settings/
+
+# Test and benchmark results
+bandwidth_results.txt
+*.log
+*.csv
+*.json
+results/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Package files
+*.rpm
+*.deb
+*.tar.gz
+*.zip
+
+# Backup files
+*.bak
+*.orig
+
+# CMake files (if using CMake)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+install_manifest.txt
+
+# Autotools files
+*.m4
+configure
+config.h
+config.h.in
+config.log
+config.status
+autom4te.cache/
+aclocal.m4
+
+# Profiling files
+*.prof
+*.gmon
+gmon.out
+callgrind.out.*
+massif.out.*
+*.gcda
+*.gcno
+*.gcov
+
+# Memory debugging files
+valgrind-*.log
+*.memcheck
+*.helgrind
+*.drd
+
+# Performance analysis files
+perf.data*
+*.perf
+
+# Documentation generated files
+docs/html/
+docs/latex/
+*.pdf
+*.ps
+*.eps
+
+# Dependency files
+*.d
+.deps/
+
+# Python bytecode (if any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment files
+.env
+.env.local 
