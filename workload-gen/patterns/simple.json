@@ -1,0 +1,10 @@
+{
+  "name": "simple_read_write",
+  "operations": [
+    {"op": "read", "addr": 0, "size": 4096, "thread": 0},
+    {"op": "write", "addr": 4096, "size": 4096, "thread": 0},
+    {"op": "read", "addr": 8192, "size": 4096, "thread": 1},
+    {"op": "cpu", "cycles": 10000, "thread": 0},
+    {"op": "read", "addr": 12288, "size": 4096, "thread": 1}
+  ]
+} 

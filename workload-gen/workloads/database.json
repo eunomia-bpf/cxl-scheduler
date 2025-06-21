@@ -1,0 +1,14 @@
+{
+  "name": "database_oltp",
+  "memory_size": "2GB",
+  "duration_seconds": 60,
+  "num_threads": 8,
+  "workload_type": "Database",
+  "params": {
+    "block_size": 8192,
+    "read_ratio": 0.9,
+    "iterations": 2000,
+    "locality_factor": 0.3,
+    "cache_size": 134217728
+  }
+} 

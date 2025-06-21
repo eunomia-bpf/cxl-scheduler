@@ -1,0 +1,56 @@
+{
+  "name": "simple_read_with_iterations",
+  "description": "Simple read pattern with iteration support",
+  "memory_size": 1048576,
+  "device_path": null,
+  "use_mmap": false,
+  "num_threads": 2,
+  "duration_seconds": 5,
+  "thread_patterns": [
+    {
+      "thread_id": 0,
+      "operations": [
+        {
+          "op_type": "Read",
+          "address": 0,
+          "size": 4096,
+          "cpu_cycles": null,
+          "iterations": 100,
+          "think_time_ns": null,
+          "stride": 4096
+        }
+      ],
+      "repeat_pattern": 5,
+      "working_set_size": 524288,
+      "working_set_base": 0
+    },
+    {
+      "thread_id": 1,
+      "operations": [
+        {
+          "op_type": "Write",
+          "address": 0,
+          "size": 4096,
+          "cpu_cycles": null,
+          "iterations": 50,
+          "think_time_ns": 1000,
+          "stride": 8192
+        },
+        {
+          "op_type": "Cpu",
+          "address": null,
+          "size": null,
+          "cpu_cycles": 10000,
+          "iterations": 10,
+          "think_time_ns": null,
+          "stride": null
+        }
+      ],
+      "repeat_pattern": 3,
+      "working_set_size": 524288,
+      "working_set_base": 524288
+    }
+  ],
+  "rate_limit_ops_per_sec": null,
+  "memory_init": "Sequential"
+} 

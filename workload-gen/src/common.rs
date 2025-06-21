@@ -1,56 +1,102 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::time::Duration;
 
-/// Simple operation types
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum OpType {
-    Read,
-    Write,
-    Cpu,  // CPU computation
+/// Ultra-simple operation - just describes "what to do"
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op")]
+pub enum Operation {
+    #[serde(rename = "read")]
+    Read { addr: u64, size: u64, thread: u32 },
+    
+    #[serde(rename = "write")]
+    Write { addr: u64, size: u64, thread: u32 },
+    
+    #[serde(rename = "cpu")]
+    Cpu { cycles: u64, thread: u32 },
+    
+    #[serde(rename = "gpu")]
+    Gpu { kernel: String, thread: u32 },
 }
 
-/// Single memory/cpu operation
+/// Ultra-simple pattern - just a list of operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Operation {
-    /// Operation type
-    pub op_type: OpType,
-    /// Target address (for memory ops)
-    pub address: Option<u64>,
-    /// Size in bytes (for memory ops)
-    pub size: Option<usize>,
-    /// CPU cycles (for CPU ops)
-    pub cpu_cycles: Option<u64>,
-    /// Thread ID to execute on
-    pub thread_id: usize,
-    /// Timestamp when to execute (nanoseconds from start)
-    pub timestamp_ns: u64,
-}
-
-/// Pattern specification - just a list of operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PatternSpec {
-    /// Pattern metadata
+pub struct Pattern {
     pub name: String,
-    pub description: Option<String>,
-    
-    /// Memory configuration
-    pub memory_size: u64,
-    pub device_path: Option<String>,
-    pub use_mmap: bool,
-    
-    /// Execution parameters  
-    pub duration_ns: u64,
-    pub num_threads: usize,
-    
-    /// The actual operation sequence
     pub operations: Vec<Operation>,
 }
 
+/// Address mapping configuration - separate from pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressMap {
+    pub memory_regions: Vec<MemoryRegion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRegion {
+    pub name: String,
+    pub base: u64,
+    pub size: u64,
+    #[serde(rename = "type")]
+    pub region_type: RegionType,
+    pub device: Option<String>,
+    pub numa_node: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegionType {
+    Dram,
+    Cxl,
+    Gpu,
+    Storage,
+}
+
+/// Schedule mapping configuration - separate from pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleMap {
+    pub thread_mapping: Vec<ThreadMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMapping {
+    pub thread: u32,
+    pub cpu: Option<u32>,
+    pub gpu: Option<u32>,
+    pub numa_node: Option<u32>,
+}
+
+/// Execution configuration - separate from pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionConfig {
+    pub duration_seconds: Option<u64>,
+    pub rate_limit: Option<u64>,
+    pub warmup_seconds: Option<u64>,
+    pub metrics_interval: Option<u64>,
+}
+
+/// Workload specification for pattern generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadSpec {
+    pub name: String,
+    pub workload_type: WorkloadType,
+    pub params: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkloadType {
+    Sequential,
+    Random,
+    Hotspot,
+    Database,
+    Analytics,
+    Cache,
+    Mixed,
+}
+
 /// Runtime statistics
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct ThreadStats {
-    pub thread_id: usize,
+    pub thread_id: u32,
     pub operations_completed: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
@@ -61,8 +107,9 @@ pub struct ThreadStats {
 }
 
 /// Execution results
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct ExecutionResults {
+    pub pattern_name: String,
     pub total_duration_ns: u64,
     pub total_operations: u64,
     pub total_bytes_read: u64,
@@ -71,26 +118,8 @@ pub struct ExecutionResults {
     pub average_latency_ns: f64,
     pub read_throughput_mbps: f64,
     pub write_throughput_mbps: f64,
+    pub operations_per_second: f64,
     pub thread_stats: Vec<ThreadStats>,
-}
-
-/// Workload specification (for pattern generation)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkloadSpec {
-    pub name: String,
-    pub memory_size: String,
-    pub duration: u64,
-    pub threads: usize,
-    pub patterns: Vec<WorkloadPattern>,
-}
-
-/// High-level workload pattern description
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkloadPattern {
-    pub name: String,
-    pub pattern_type: String, // "sequential", "random", "hotspot", etc.
-    pub weight: f64,
-    pub params: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Utility functions

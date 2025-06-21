@@ -1,253 +1,316 @@
-# CXL Workload Generator
+# CXL Workload Generator - Simple & Orthogonal Design
 
-一个用于CXL内存测试的灵活工作负载生成器，采用解耦设计，将模式生成和执行彻底分离。
+一个用于CXL内存测试的极简工作负载生成器，采用完全正交的设计，各组件职责单一且可独立配置。
 
-## 架构设计
+## 核心设计理念
 
-### 核心理念
+### 1. 极简Pattern - 只描述"做什么"
 
-本工具采用**完全解耦**的设计，将工作负载定义、模式生成和执行分离：
-
-```
-Workload Spec → Pattern Generator → Pattern Spec → Pattern Executor
-     ↓               ↓                  ↓              ↓
-   高层描述        生成工具          操作序列        执行引擎
-```
-
-### 组件架构
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│ Workload Spec   │ -> │ Pattern Generator│ -> │ Pattern Spec    │
-│ (高层工作负载)  │    │ (独立工具)      │    │ (操作序列)      │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                                         |
-                                                         v
-                                                ┌─────────────────┐
-                                                │ Pattern Executor│
-                                                │ (执行引擎)      │
-                                                └─────────────────┘
-```
-
-## 核心概念
-
-### 1. Pattern Specification (模式规范)
-
-Pattern Spec是简单的操作序列描述，包含：
-
-- **操作类型**: `Read`, `Write`, `Cpu`
-- **内存地址**: 目标地址（仅内存操作）
-- **大小**: 字节数（仅内存操作）
-- **CPU周期**: 计算量（仅CPU操作）
-- **线程ID**: 执行线程
-- **时间戳**: 执行时机（纳秒）
-
-### 2. 操作类型
-
-```rust
-pub enum OpType {
-    Read,   // 内存读取
-    Write,  // 内存写入
-    Cpu,    // CPU计算
-}
-```
-
-### 3. 操作结构
-
-```rust
-pub struct Operation {
-    pub op_type: OpType,
-    pub address: Option<u64>,      // 内存地址
-    pub size: Option<usize>,       // 操作大小
-    pub cpu_cycles: Option<u64>,   // CPU周期
-    pub thread_id: usize,          // 线程ID
-    pub timestamp_ns: u64,         // 时间戳
-}
-```
-
-## 使用方式
-
-### 1. 执行现有Pattern
-
-```bash
-# 基本用法
-./workload-gen --pattern patterns/simple_read.json
-
-# 使用CXL设备
-./workload-gen --pattern patterns/simple_read.json --device /dev/cxl/mem0
-
-# 使用mmap访问设备
-./workload-gen --pattern patterns/simple_read.json --device /dev/cxl/mem0 --mmap
-
-# 详细输出
-./workload-gen --pattern patterns/simple_read.json --verbose
-```
-
-### 2. Pattern示例
-
-简单的混合访问模式：
+Pattern只包含最基础的操作序列，不包含任何复杂逻辑：
 
 ```json
 {
-  "name": "simple_mixed_pattern",
-  "description": "Mixed read/write/cpu operations",
-  "memory_size": 1048576,
-  "device_path": null,
-  "use_mmap": false,
-  "duration_ns": 5000000000,
-  "num_threads": 2,
   "operations": [
-    {
-      "op_type": "Read",
-      "address": 0,
-      "size": 4096,
-      "cpu_cycles": null,
-      "thread_id": 0,
-      "timestamp_ns": 0
-    },
-    {
-      "op_type": "Write",
-      "address": 4096,
-      "size": 4096, 
-      "cpu_cycles": null,
-      "thread_id": 1,
-      "timestamp_ns": 1000000
-    },
-    {
-      "op_type": "Cpu",
-      "address": null,
-      "size": null,
-      "cpu_cycles": 10000,
-      "thread_id": 0,
-      "timestamp_ns": 2000000
-    }
+    {"op": "read", "addr": 0, "size": 4096, "thread": 0},
+    {"op": "write", "addr": 4096, "size": 4096, "thread": 1},
+    {"op": "cpu", "cycles": 10000, "thread": 0},
+    {"op": "gpu", "kernel": "gemm", "thread": 2}
   ]
 }
 ```
 
-## 优势特性
-
-### 1. 完全解耦
-
-- **Pattern生成** 与 **Pattern执行** 完全分离
-- 可以使用任何工具生成Pattern Spec
-- 执行器只负责按照规范执行操作
-
-### 2. 精确控制
-
-- **纳秒级时间控制**: 每个操作都有精确的时间戳
-- **线程级调度**: 明确指定每个操作的执行线程
-- **地址级控制**: 精确指定内存访问地址
-
-### 3. 灵活扩展
-
-- **多种操作类型**: 支持内存读写和CPU计算
-- **设备无关**: 支持系统内存和CXL设备
-- **访问方式**: 支持mmap和read/write两种访问方式
-
-### 4. 详细指标
-
-- **每线程统计**: 详细的每线程性能数据
-- **操作类型分离**: 读写分离的吞吐量统计
-- **延迟分析**: 最小/最大/平均延迟
-
-## 目录结构
+### 2. 正交组件架构
 
 ```
-workload-gen/
-├── src/
-│   ├── common.rs     # 通用类型定义
-│   ├── executor.rs   # Pattern执行器
-│   ├── lib.rs        # 库入口
-│   └── main.rs       # 可执行文件
-├── patterns/         # Pattern示例
-│   ├── simple_read.json
-│   └── example_*.json
-├── Cargo.toml        # Rust项目配置
-└── README.md         # 本文档
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ Generator   │ -> │ Pattern     │ -> │ Scheduler   │
+│ (生成什么)  │    │ (做什么)    │    │ (在哪里做)  │
+└─────────────┘    └─────────────┘    └─────────────┘
+                                              |
+                                              v
+                                      ┌─────────────┐
+                                      │ Executor    │
+                                      │ (怎么做)    │
+                                      └─────────────┘
 ```
 
-## 构建和安装
+### 3. 组件职责分离
+
+- **Pattern**: 纯粹的操作序列，无任何配置
+- **Generator**: 根据高层工作负载生成Pattern
+- **Scheduler**: 控制Pattern在哪个CPU/GPU/设备上执行
+- **Executor**: 负责实际执行，处理地址映射、设备访问等
+
+## Pattern规范 - 极简设计
+
+### 操作类型
+
+```rust
+pub enum Operation {
+    Read { addr: u64, size: u64, thread: u32 },
+    Write { addr: u64, size: u64, thread: u32 },
+    Cpu { cycles: u64, thread: u32 },
+    Gpu { kernel: String, thread: u32 },
+}
+```
+
+### Pattern结构
+
+```rust
+pub struct Pattern {
+    pub name: String,
+    pub operations: Vec<Operation>,
+}
+```
+
+就这么简单！没有：
+- ❌ iterations
+- ❌ repeat_pattern  
+- ❌ working_set_size
+- ❌ think_time
+- ❌ stride
+- ❌ memory_init
+- ❌ 任何配置参数
+
+## 配置分离设计
+
+### 1. 地址映射配置 (AddressMap)
+
+```json
+{
+  "memory_regions": [
+    {"name": "system_mem", "base": 0, "size": "1GB", "type": "dram"},
+    {"name": "cxl_mem", "base": "1GB", "size": "2GB", "type": "cxl", "device": "/dev/cxl0"},
+    {"name": "gpu_mem", "base": "3GB", "size": "1GB", "type": "gpu", "device": 0}
+  ]
+}
+```
+
+### 2. 调度配置 (ScheduleMap)
+
+```json
+{
+  "thread_mapping": [
+    {"thread": 0, "cpu": 0, "numa_node": 0},
+    {"thread": 1, "cpu": 4, "numa_node": 1},
+    {"thread": 2, "gpu": 0}
+  ]
+}
+```
+
+### 3. 执行配置 (ExecutionConfig)
+
+```json
+{
+  "duration_seconds": 60,
+  "rate_limit": null,
+  "warmup_seconds": 5,
+  "metrics_interval": 1000
+}
+```
+
+## 子命令设计
+
+### 1. generate - 生成Pattern
 
 ```bash
-# 编译
-cargo build --release
+# 从高层工作负载生成简单Pattern
+workload-gen generate \
+  --workload workloads/database.json \
+  --output patterns/db_pattern.json
 
-# 运行测试
-cargo test
-
-# 安装
-cargo install --path .
+# 生成特定类型的Pattern
+workload-gen generate \
+  --type sequential \
+  --size 1000 \
+  --threads 4 \
+  --output patterns/seq.json
 ```
 
-## 扩展开发
+### 2. exec - 执行Pattern
 
-### 1. Pattern生成器
+```bash
+# 基本执行
+workload-gen exec --pattern patterns/simple.json
 
-可以创建独立的Pattern生成工具，从高层工作负载描述生成Pattern Spec：
+# 使用地址映射
+workload-gen exec \
+  --pattern patterns/simple.json \
+  --address-map configs/cxl_map.json
 
-```rust
-// 示例：从工作负载规范生成Pattern
-fn generate_pattern(workload: &WorkloadSpec) -> PatternSpec {
-    // 实现具体的生成逻辑
-    // 例如：sequential, random, hotspot等模式
+# 使用调度配置
+workload-gen exec \
+  --pattern patterns/simple.json \
+  --schedule-map configs/numa_schedule.json \
+  --execution-config configs/long_run.json
+
+# 组合使用
+workload-gen exec \
+  --pattern patterns/complex.json \
+  --address-map configs/multi_device.json \
+  --schedule-map configs/gpu_schedule.json \
+  --execution-config configs/benchmark.json
+```
+
+### 3. schedule - 调度分析
+
+```bash
+# 分析Pattern的调度需求
+workload-gen schedule \
+  --pattern patterns/complex.json \
+  --analyze
+
+# 生成推荐的调度配置
+workload-gen schedule \
+  --pattern patterns/complex.json \
+  --generate-config \
+  --output configs/recommended.json
+```
+
+## 设备支持
+
+### 1. 内存设备
+
+```json
+{
+  "type": "memory",
+  "access_method": "mmap|direct|syscall",
+  "device_path": "/dev/cxl0",
+  "numa_node": 1
 }
 ```
 
-### 2. 新操作类型
+### 2. GPU设备
 
-轻松添加新的操作类型：
-
-```rust
-pub enum OpType {
-    Read,
-    Write,  
-    Cpu,
-    // 新增操作类型
-    Network,    // 网络操作
-    Disk,       // 磁盘操作
-    Custom(String), // 自定义操作
+```json
+{
+  "type": "gpu",
+  "device_id": 0,
+  "kernels": {
+    "gemm": {"grid": [256, 256], "block": [16, 16]},
+    "copy": {"threads": 1024}
+  }
 }
 ```
 
-### 3. 高级调度
+### 3. 存储设备
 
-可以扩展执行器支持：
-
-- **NUMA感知调度**
-- **CPU亲和性控制**
-- **优先级调度**
-- **动态负载均衡**
-
-## 性能特性
-
-- **低开销**: 最小化执行器开销，专注于精确测试
-- **高精度**: 纳秒级时间控制
-- **可扩展**: 支持多线程并发执行
-- **内存安全**: 使用Rust的内存安全特性
-
-## 使用场景
-
-1. **CXL设备性能测试**: 测试CXL内存的带宽和延迟
-2. **内存访问模式验证**: 验证不同访问模式的性能特征
-3. **多线程负载测试**: 测试并发访问的性能表现
-4. **调度算法验证**: 验证内存调度算法的效果
-
-## 示例输出
-
-```
-=== Execution Results ===
-Pattern: simple_sequential_read
-Duration: 5.001 s
-Operations: 1000
-Average Latency: 245.67 ns
-Read: 4096000 bytes, 0.82 MB/s
-Write: 2048000 bytes, 0.41 MB/s
-CPU cycles: 50000
-
-=== Per-Thread Stats ===
-Thread 0: 600 ops, avg 234.12 ns
-Thread 1: 400 ops, avg 262.45 ns
+```json
+{
+  "type": "storage", 
+  "device_path": "/dev/nvme0n1",
+  "access_method": "io_uring|aio|sync"
+}
 ```
 
-这个架构实现了工作负载生成和执行的完全解耦，为CXL内存测试提供了灵活、精确、可扩展的工具基础。 
+## 示例Pattern
+
+### 1. 极简读写Pattern
+
+```json
+{
+  "name": "simple_rw",
+  "operations": [
+    {"op": "read", "addr": 0, "size": 4096, "thread": 0},
+    {"op": "write", "addr": 4096, "size": 4096, "thread": 0},
+    {"op": "read", "addr": 8192, "size": 4096, "thread": 1}
+  ]
+}
+```
+
+### 2. 混合计算Pattern
+
+```json
+{
+  "name": "mixed_compute",
+  "operations": [
+    {"op": "read", "addr": 0, "size": 1048576, "thread": 0},
+    {"op": "cpu", "cycles": 1000000, "thread": 0},
+    {"op": "gpu", "kernel": "gemm", "thread": 1},
+    {"op": "write", "addr": 1048576, "size": 1048576, "thread": 0}
+  ]
+}
+```
+
+### 3. 多设备Pattern
+
+```json
+{
+  "name": "multi_device",
+  "operations": [
+    {"op": "read", "addr": 0, "size": 4096, "thread": 0},
+    {"op": "read", "addr": 1073741824, "size": 4096, "thread": 1},
+    {"op": "read", "addr": 3221225472, "size": 4096, "thread": 2}
+  ]
+}
+```
+
+## 工作流程
+
+### 1. Pattern生成
+
+```bash
+# 生成数据库工作负载Pattern
+workload-gen generate \
+  --type database \
+  --read-ratio 0.9 \
+  --block-size 8192 \
+  --operations 1000 \
+  --threads 4 \
+  --output db.json
+```
+
+### 2. 配置设备映射
+
+```bash
+# 创建地址映射配置
+cat > address_map.json << EOF
+{
+  "memory_regions": [
+    {"name": "dram", "base": 0, "size": "1GB", "type": "dram"},
+    {"name": "cxl", "base": "1GB", "size": "2GB", "type": "cxl", "device": "/dev/cxl0"}
+  ]
+}
+EOF
+```
+
+### 3. 执行测试
+
+```bash
+# 执行测试
+workload-gen exec \
+  --pattern db.json \
+  --address-map address_map.json \
+  --duration 60 \
+  --output results.json
+```
+
+## 优势
+
+### 1. 极简Pattern
+- Pattern文件小，易于理解和调试
+- 可以手工编写简单的测试Pattern
+- 便于版本控制和diff
+
+### 2. 完全正交
+- Pattern生成与执行完全分离
+- 地址映射与Pattern无关
+- 调度策略独立配置
+- 每个组件可单独测试
+
+### 3. 高度可扩展
+- 新设备类型只需扩展地址映射
+- 新调度策略只需修改调度器
+- Pattern格式永远不变
+
+### 4. 灵活组合
+- 同一个Pattern可以在不同设备上执行
+- 同一个设备配置可以运行不同Pattern
+- 调度策略可以独立优化
+
+### 5. 易于集成
+- Pattern可以被其他工具生成
+- 执行结果标准化
+- 配置文件可以被其他系统使用
+
+这种设计实现了真正的关注点分离，每个组件都有明确的职责，同时保持了最大的灵活性和可扩展性。 

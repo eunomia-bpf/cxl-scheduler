@@ -1,0 +1,12 @@
+{
+  "name": "sequential_read_write",
+  "memory_size": "1GB",
+  "duration_seconds": 30,
+  "num_threads": 4,
+  "workload_type": "Sequential",
+  "params": {
+    "block_size": 4096,
+    "read_ratio": 0.7,
+    "iterations": 1000
+  }
+} 

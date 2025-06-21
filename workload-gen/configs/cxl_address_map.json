@@ -1,0 +1,20 @@
+{
+  "memory_regions": [
+    {
+      "name": "system_dram",
+      "base": 0,
+      "size": 1073741824,
+      "type": "dram",
+      "device": null,
+      "numa_node": 0
+    },
+    {
+      "name": "cxl_memory",
+      "base": 1073741824,
+      "size": 2147483648,
+      "type": "cxl",
+      "device": "/dev/cxl0",
+      "numa_node": 1
+    }
+  ]
+} 

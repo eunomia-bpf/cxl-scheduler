@@ -231,10 +231,11 @@ impl MetricsCollector {
 pub struct PatternExecutor {
     memory: Arc<MemoryManager>,
     metrics: MetricsCollector,
+    pattern: PatternSpec,
 }
 
 impl PatternExecutor {
-    pub fn new(pattern: &PatternSpec) -> Result<Self> {
+    pub fn new(pattern: PatternSpec) -> Result<Self> {
         let memory = if let Some(device_path) = &pattern.device_path {
             Arc::new(MemoryManager::new_device_memory(device_path, pattern.memory_size, pattern.use_mmap)?)
         } else {
@@ -243,67 +244,75 @@ impl PatternExecutor {
         
         let metrics = MetricsCollector::new(pattern.num_threads);
         
-        Ok(Self { memory, metrics })
+        Ok(Self { memory, metrics, pattern })
     }
     
-    pub fn execute(&self, pattern: &PatternSpec) -> Result<ExecutionResults> {
+    pub fn execute(&self) -> Result<ExecutionResults> {
+        let pattern = &self.pattern;
         println!("Executing pattern: {}", pattern.name);
-        println!("Operations: {}", pattern.operations.len());
+        println!("Thread patterns: {}", pattern.thread_patterns.len());
         println!("Threads: {}", pattern.num_threads);
-        
-        // Group operations by thread
-        let mut per_thread_ops: Vec<Vec<Operation>> = vec![Vec::new(); pattern.num_threads];
-        for op in &pattern.operations {
-            let tid = op.thread_id % pattern.num_threads;
-            per_thread_ops[tid].push(op.clone());
-        }
-        
-        // Sort by timestamp
-        for ops in &mut per_thread_ops {
-            ops.sort_by_key(|op| op.timestamp_ns);
-        }
         
         let start_time = Instant::now();
         
         // Spawn worker threads
         let mut handles = Vec::new();
-        for thread_id in 0..pattern.num_threads {
-            let ops = std::mem::take(&mut per_thread_ops[thread_id]);
+        for thread_pattern in &pattern.thread_patterns {
+            let thread_pattern = thread_pattern.clone();
             let memory = Arc::clone(&self.memory);
             let metrics = self.metrics.clone();
             
             let handle = thread::spawn(move || {
-                let thread_start = Instant::now();
+                let thread_id = thread_pattern.thread_id;
+                let working_set_base = thread_pattern.working_set_base.unwrap_or(0);
+                let working_set_size = thread_pattern.working_set_size.unwrap_or(u64::MAX);
                 
-                for op in ops {
-                    // Wait until it's time for this operation
-                    let now_ns = thread_start.elapsed().as_nanos() as u64;
-                    if op.timestamp_ns > now_ns {
-                        let sleep_ns = op.timestamp_ns - now_ns;
-                        thread::sleep(Duration::from_nanos(sleep_ns));
-                    }
-                    
-                    // Execute operation
-                    let latency = match op.op_type {
-                        OpType::Read => {
-                            memory.execute_read(
-                                op.address.unwrap_or(0),
-                                op.size.unwrap_or(4096)
-                            )
-                        },
-                        OpType::Write => {
-                            memory.execute_write(
-                                op.address.unwrap_or(0),
-                                op.size.unwrap_or(4096)
-                            )
-                        },
-                        OpType::Cpu => {
-                            memory.execute_cpu(op.cpu_cycles.unwrap_or(1000))
-                        },
-                    };
-                    
-                    if let Ok(latency) = latency {
-                        metrics.record_operation(thread_id, &op, latency);
+                // Repeat pattern if specified
+                let repeat_count = thread_pattern.repeat_pattern.unwrap_or(1);
+                
+                for _repeat in 0..repeat_count {
+                    for op in &thread_pattern.operations {
+                        let iterations = op.iterations.unwrap_or(1);
+                        let mut current_address = working_set_base + op.address.unwrap_or(0);
+                        
+                        for _iter in 0..iterations {
+                            // Execute operation
+                            let latency = match op.op_type {
+                                OpType::Read => {
+                                    let size = op.size.unwrap_or(4096);
+                                    // Ensure address is within working set
+                                    if current_address + size as u64 > working_set_base + working_set_size {
+                                        current_address = working_set_base;
+                                    }
+                                    memory.execute_read(current_address, size)
+                                },
+                                OpType::Write => {
+                                    let size = op.size.unwrap_or(4096);
+                                    // Ensure address is within working set
+                                    if current_address + size as u64 > working_set_base + working_set_size {
+                                        current_address = working_set_base;
+                                    }
+                                    memory.execute_write(current_address, size)
+                                },
+                                OpType::Cpu => {
+                                    memory.execute_cpu(op.cpu_cycles.unwrap_or(1000))
+                                },
+                            };
+                            
+                            if let Ok(latency) = latency {
+                                metrics.record_operation(thread_id, &op, latency);
+                            }
+                            
+                            // Update address with stride
+                            if let Some(stride) = op.stride {
+                                current_address += stride;
+                            }
+                            
+                            // Think time
+                            if let Some(think_time_ns) = op.think_time_ns {
+                                thread::sleep(Duration::from_nanos(think_time_ns));
+                            }
+                        }
                     }
                 }
             });
@@ -317,6 +326,8 @@ impl PatternExecutor {
         }
         
         let total_duration = start_time.elapsed();
-        Ok(self.metrics.finalize(total_duration))
+        let mut results = self.metrics.finalize(total_duration);
+        results.pattern_name = pattern.name.clone();
+        Ok(results)
     }
 } 
