@@ -17,9 +17,15 @@ from datetime import datetime
 import time
 
 # Configuration
-THREAD_NUMBERS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1000]
-READ_RATIOS = np.arange(0.05, 1.0, 0.05)  # 0.05 to 0.95
-DURATION = 10  # seconds per test
+# Test 1: Fixed thread count (1000), varying read ratios
+TEST1_THREADS = 1000
+TEST1_READ_RATIOS = np.arange(0.05, 1.0, 0.05)  # 0.05 to 0.95
+
+# Test 2: Fixed read ratio (0.5), varying thread counts
+TEST2_THREAD_NUMBERS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1000]
+TEST2_READ_RATIO = 0.5
+
+DURATION = 60  # seconds per test
 BLOCK_SIZE = 4096  # 4KB
 BUFFER_SIZE = "1G"  # 1GB
 DEVICE = ""  # Empty for mmap mode
@@ -86,22 +92,24 @@ def run_benchmark(num_threads, read_ratio):
         print(f"Error: {e}")
         return None
 
-def collect_data():
-    """Run all benchmark combinations and collect results"""
+def collect_data(test_num):
+    """Run benchmark for specified test"""
     results = []
     
-    total_runs = len(THREAD_NUMBERS) * len(READ_RATIOS)
-    
-    with tqdm(total=total_runs, desc="Running benchmarks") as pbar:
-        for num_threads in THREAD_NUMBERS:
-            for read_ratio in READ_RATIOS:
-                pbar.set_description(f"Threads: {num_threads}, Read ratio: {read_ratio:.2f}")
+    if test_num == 1:
+        # Test 1: Fixed thread count, varying read ratios
+        total_runs = len(TEST1_READ_RATIOS)
+        print(f"\nTest 1: Fixed thread count ({TEST1_THREADS}), varying read ratios")
+        
+        with tqdm(total=total_runs, desc="Running Test 1") as pbar:
+            for read_ratio in TEST1_READ_RATIOS:
+                pbar.set_description(f"Threads: {TEST1_THREADS}, Read ratio: {read_ratio:.2f}")
                 
-                metrics = run_benchmark(num_threads, read_ratio)
+                metrics = run_benchmark(TEST1_THREADS, read_ratio)
                 
                 if metrics:
                     result = {
-                        'threads': num_threads,
+                        'threads': TEST1_THREADS,
                         'read_ratio': read_ratio,
                         **metrics
                     }
@@ -109,7 +117,35 @@ def collect_data():
                     
                     # Save intermediate results
                     pd.DataFrame(results).to_csv(
-                        os.path.join(RESULTS_DIR, f'results_intermediate_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'),
+                        os.path.join(RESULTS_DIR, f'test1_intermediate_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'),
+                        index=False
+                    )
+                
+                pbar.update(1)
+                time.sleep(1)  # Brief pause between tests
+    
+    elif test_num == 2:
+        # Test 2: Fixed read ratio, varying thread counts
+        total_runs = len(TEST2_THREAD_NUMBERS)
+        print(f"\nTest 2: Fixed read ratio ({TEST2_READ_RATIO}), varying thread counts")
+        
+        with tqdm(total=total_runs, desc="Running Test 2") as pbar:
+            for num_threads in TEST2_THREAD_NUMBERS:
+                pbar.set_description(f"Threads: {num_threads}, Read ratio: {TEST2_READ_RATIO}")
+                
+                metrics = run_benchmark(num_threads, TEST2_READ_RATIO)
+                
+                if metrics:
+                    result = {
+                        'threads': num_threads,
+                        'read_ratio': TEST2_READ_RATIO,
+                        **metrics
+                    }
+                    results.append(result)
+                    
+                    # Save intermediate results
+                    pd.DataFrame(results).to_csv(
+                        os.path.join(RESULTS_DIR, f'test2_intermediate_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'),
                         index=False
                     )
                 
@@ -117,6 +153,125 @@ def collect_data():
                 time.sleep(1)  # Brief pause between tests
     
     return pd.DataFrame(results)
+
+def create_test1_figures(df):
+    """Create visualization figures for Test 1 (fixed threads, varying read ratio)"""
+    
+    # Set style
+    sns.set_style("whitegrid")
+    plt.rcParams['figure.figsize'] = (12, 8)
+    plt.rcParams['font.size'] = 12
+    
+    # 1. Line plot of bandwidth vs read ratio
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(df['read_ratio'], df['total_bandwidth'], 'o-', linewidth=2, markersize=8, label='Total')
+    ax.plot(df['read_ratio'], df['read_bandwidth'], 's-', linewidth=2, markersize=6, label='Read')
+    ax.plot(df['read_ratio'], df['write_bandwidth'], '^-', linewidth=2, markersize=6, label='Write')
+    ax.set_xlabel('Read Ratio')
+    ax.set_ylabel('Bandwidth (MB/s)')
+    ax.set_title(f'Bandwidth vs Read Ratio (Threads = {TEST1_THREADS})')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test1_bandwidth_vs_read_ratio.png'), dpi=300)
+    plt.close()
+    
+    # 2. IOPS plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(df['read_ratio'], df['total_iops'], 'o-', linewidth=2, markersize=8, label='Total IOPS')
+    ax.plot(df['read_ratio'], df['read_iops'], 's-', linewidth=2, markersize=6, label='Read IOPS')
+    ax.plot(df['read_ratio'], df['write_iops'], '^-', linewidth=2, markersize=6, label='Write IOPS')
+    ax.set_xlabel('Read Ratio')
+    ax.set_ylabel('IOPS')
+    ax.set_title(f'IOPS vs Read Ratio (Threads = {TEST1_THREADS})')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test1_iops_vs_read_ratio.png'), dpi=300)
+    plt.close()
+    
+    # 3. Stacked area plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.fill_between(df['read_ratio'], 0, df['read_bandwidth'], alpha=0.7, label='Read Bandwidth')
+    ax.fill_between(df['read_ratio'], df['read_bandwidth'], df['total_bandwidth'], alpha=0.7, label='Write Bandwidth')
+    ax.set_xlabel('Read Ratio')
+    ax.set_ylabel('Bandwidth (MB/s)')
+    ax.set_title(f'Read/Write Bandwidth Distribution (Threads = {TEST1_THREADS})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test1_bandwidth_stacked.png'), dpi=300)
+    plt.close()
+
+def create_test2_figures(df):
+    """Create visualization figures for Test 2 (fixed read ratio, varying threads)"""
+    
+    # Set style
+    sns.set_style("whitegrid")
+    plt.rcParams['figure.figsize'] = (12, 8)
+    plt.rcParams['font.size'] = 12
+    
+    # 1. Line plot of bandwidth vs threads
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(df['threads'], df['total_bandwidth'], 'o-', linewidth=2, markersize=8, label='Total')
+    ax.plot(df['threads'], df['read_bandwidth'], 's-', linewidth=2, markersize=6, label='Read')
+    ax.plot(df['threads'], df['write_bandwidth'], '^-', linewidth=2, markersize=6, label='Write')
+    ax.set_xlabel('Number of Threads')
+    ax.set_ylabel('Bandwidth (MB/s)')
+    ax.set_title(f'Bandwidth Scaling with Thread Count (Read Ratio = {TEST2_READ_RATIO})')
+    ax.set_xscale('log')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test2_bandwidth_vs_threads.png'), dpi=300)
+    plt.close()
+    
+    # 2. Efficiency plot
+    df['bandwidth_per_thread'] = df['total_bandwidth'] / df['threads']
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(df['threads'], df['bandwidth_per_thread'], 'o-', linewidth=2, markersize=8)
+    ax.set_xlabel('Number of Threads')
+    ax.set_ylabel('Bandwidth per Thread (MB/s)')
+    ax.set_title(f'Bandwidth Efficiency (Read Ratio = {TEST2_READ_RATIO})')
+    ax.set_xscale('log')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test2_bandwidth_efficiency.png'), dpi=300)
+    plt.close()
+    
+    # 3. IOPS scaling
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(df['threads'], df['total_iops'], 'o-', linewidth=2, markersize=8, label='Total IOPS')
+    ax.plot(df['threads'], df['read_iops'], 's-', linewidth=2, markersize=6, label='Read IOPS')
+    ax.plot(df['threads'], df['write_iops'], '^-', linewidth=2, markersize=6, label='Write IOPS')
+    ax.set_xlabel('Number of Threads')
+    ax.set_ylabel('IOPS')
+    ax.set_title(f'IOPS Scaling with Thread Count (Read Ratio = {TEST2_READ_RATIO})')
+    ax.set_xscale('log')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test2_iops_vs_threads.png'), dpi=300)
+    plt.close()
+    
+    # 4. Scalability plot (normalized)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    baseline_bw = df[df['threads'] == df['threads'].min()]['total_bandwidth'].values[0]
+    df['speedup'] = df['total_bandwidth'] / baseline_bw
+    df['ideal_speedup'] = df['threads'] / df['threads'].min()
+    
+    ax.plot(df['threads'], df['speedup'], 'o-', linewidth=2, markersize=8, label='Actual Speedup')
+    ax.plot(df['threads'], df['ideal_speedup'], '--', linewidth=2, alpha=0.7, label='Ideal Linear Speedup')
+    ax.set_xlabel('Number of Threads')
+    ax.set_ylabel('Speedup')
+    ax.set_title(f'Scalability Analysis (Read Ratio = {TEST2_READ_RATIO})')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES_DIR, 'test2_scalability.png'), dpi=300)
+    plt.close()
 
 def create_figures(df):
     """Create various visualization figures"""
@@ -285,39 +440,79 @@ def main():
         print("Please build it first with 'make double_bandwidth'")
         return
     
-    # Check if we should load existing data
-    existing_files = [f for f in os.listdir(RESULTS_DIR) if f.endswith('.csv')]
+    # Ask which test to run
+    print("\nSelect test to run:")
+    print("1. Test 1: Fixed thread count (1000), varying read ratios (0.05-0.95)")
+    print("2. Test 2: Fixed read ratio (0.5), varying thread counts (2-1000)")
+    print("3. Both tests")
     
-    if existing_files and input("Found existing results. Use latest? (y/n): ").lower() == 'y':
-        latest_file = sorted(existing_files)[-1]
-        df = pd.read_csv(os.path.join(RESULTS_DIR, latest_file))
-        print(f"Loaded {len(df)} results from {latest_file}")
+    test_choice = input("\nEnter your choice (1/2/3): ").strip()
+    
+    if test_choice not in ['1', '2', '3']:
+        print("Invalid choice. Exiting.")
+        return
+    
+    tests_to_run = []
+    if test_choice == '1':
+        tests_to_run = [1]
+    elif test_choice == '2':
+        tests_to_run = [2]
     else:
-        # Collect new data
-        print(f"Running {len(THREAD_NUMBERS) * len(READ_RATIOS)} benchmark combinations...")
-        print(f"Estimated time: {len(THREAD_NUMBERS) * len(READ_RATIOS) * (DURATION + 1) / 60:.1f} minutes")
-        
-        df = collect_data()
-        
-        if df.empty:
-            print("No data collected!")
-            return
-        
-        # Save final results
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_file = os.path.join(RESULTS_DIR, f'results_final_{timestamp}.csv')
-        df.to_csv(results_file, index=False)
-        print(f"Results saved to {results_file}")
+        tests_to_run = [1, 2]
     
-    # Create figures
-    print("\nGenerating figures...")
-    create_figures(df)
+    # Run selected tests
+    for test_num in tests_to_run:
+        # Check if we should load existing data
+        test_prefix = f'test{test_num}_final'
+        existing_files = [f for f in os.listdir(RESULTS_DIR) if f.startswith(test_prefix) and f.endswith('.csv')]
+        
+        if existing_files and input(f"\nFound existing results for Test {test_num}. Use latest? (y/n): ").lower() == 'y':
+            latest_file = sorted(existing_files)[-1]
+            df = pd.read_csv(os.path.join(RESULTS_DIR, latest_file))
+            print(f"Loaded {len(df)} results from {latest_file}")
+        else:
+            # Collect new data
+            if test_num == 1:
+                print(f"\nRunning Test 1: {len(TEST1_READ_RATIOS)} benchmark combinations...")
+                print(f"Estimated time: {len(TEST1_READ_RATIOS) * (DURATION + 1) / 60:.1f} minutes")
+            else:
+                print(f"\nRunning Test 2: {len(TEST2_THREAD_NUMBERS)} benchmark combinations...")
+                print(f"Estimated time: {len(TEST2_THREAD_NUMBERS) * (DURATION + 1) / 60:.1f} minutes")
+            
+            df = collect_data(test_num)
+            
+            if df.empty:
+                print(f"No data collected for Test {test_num}!")
+                continue
+            
+            # Save final results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_file = os.path.join(RESULTS_DIR, f'test{test_num}_final_{timestamp}.csv')
+            df.to_csv(results_file, index=False)
+            print(f"Test {test_num} results saved to {results_file}")
+        
+        # Create figures for the test
+        print(f"\nGenerating figures for Test {test_num}...")
+        if test_num == 1:
+            create_test1_figures(df)
+        else:
+            create_test2_figures(df)
+        
+        # Print summary statistics
+        print(f"\nTest {test_num} Summary Statistics:")
+        print(f"Max total bandwidth: {df['total_bandwidth'].max():.2f} MB/s")
+        print(f"Best configuration: {df.loc[df['total_bandwidth'].idxmax()].to_dict()}")
+        print(f"Mean bandwidth: {df['total_bandwidth'].mean():.2f} MB/s")
+        
+        if test_num == 1:
+            # Additional stats for Test 1
+            best_read_ratio = df.loc[df['total_bandwidth'].idxmax()]['read_ratio']
+            print(f"Optimal read ratio: {best_read_ratio:.2f}")
+        else:
+            # Additional stats for Test 2
+            print(f"Max bandwidth per thread: {(df['total_bandwidth'] / df['threads']).max():.2f} MB/s")
     
-    # Print summary statistics
-    print("\nSummary Statistics:")
-    print(f"Max total bandwidth: {df['total_bandwidth'].max():.2f} MB/s")
-    print(f"Best configuration: {df.loc[df['total_bandwidth'].idxmax()].to_dict()}")
-    print(f"Mean bandwidth: {df['total_bandwidth'].mean():.2f} MB/s")
+    print(f"\nAll figures saved to {FIGURES_DIR}/")
 
 if __name__ == "__main__":
     main()
