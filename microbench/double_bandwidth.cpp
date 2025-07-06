@@ -19,6 +19,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
 
 // 添加gettid函数，用于获取Linux线程ID
 pid_t gettid() { return syscall(SYS_gettid); }
@@ -27,7 +28,7 @@ pid_t gettid() { return syscall(SYS_gettid); }
 constexpr size_t DEFAULT_BUFFER_SIZE = 1 * 1024 * 1024 * 1024UL; // 1GB
 constexpr size_t DEFAULT_BLOCK_SIZE = 4096;                      // 4KB
 constexpr int DEFAULT_DURATION = 60;                             // seconds
-constexpr int DEFAULT_NUM_THREADS = 2;      // total threads
+constexpr int DEFAULT_NUM_THREADS = 500;      // total threads
 constexpr float DEFAULT_READ_RATIO = 0.5;   // 50% readers, 50% writers
 constexpr size_t DEFAULT_MAX_BANDWIDTH = 0; // 0 means unlimited (MB/s)
 
@@ -35,6 +36,7 @@ struct ThreadStats {
   size_t bytes_processed = 0;
   size_t operations = 0;
   int thread_id = 0; // 新增：线程ID
+  size_t cpu_hash = 0; // Added for CPU workload hashing
 };
 
 // Rate limiter using token bucket algorithm
@@ -105,6 +107,7 @@ struct BenchmarkConfig {
   std::string device_path;
   bool use_mmap = false;
   bool is_cxl_mem = false;
+  size_t cpu_workload_size = 0; // CPU workload size in bytes (default: 0)
 };
 
 void print_usage(const char *prog_name) {
@@ -125,6 +128,7 @@ void print_usage(const char *prog_name) {
          "memory is used)\n"
       << "  -m, --mmap                Use mmap instead of read/write syscalls\n"
       << "  -c, --cxl-mem             Indicate the device is CXL memory\n"
+      << "  -w, --cpu-workload=SIZE    CPU workload size in bytes (default: 0)\n"
       << "  -h, --help                Show this help message\n";
 }
 
@@ -141,11 +145,12 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
       {"device", required_argument, 0, 'D'},
       {"mmap", no_argument, 0, 'm'},
       {"cxl-mem", no_argument, 0, 'c'},
+      {"cpu-workload", required_argument, 0, 'w'},
       {"help", no_argument, 0, 'h'},
       {0, 0, 0, 0}};
 
   int opt, option_index = 0;
-  while ((opt = getopt_long(argc, argv, "b:s:t:d:r:B:D:mch", long_options,
+  while ((opt = getopt_long(argc, argv, "b:s:t:d:r:B:D:mchw:", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'b':
@@ -179,6 +184,9 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
     case 'c':
       config.is_cxl_mem = true;
       break;
+    case 'w':
+      config.cpu_workload_size = std::stoull(optarg);
+      break;
     case 'h':
       print_usage(argv[0]);
       exit(0);
@@ -193,7 +201,8 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
 
 void reader_thread(void *buffer, size_t buffer_size, size_t block_size,
                    std::atomic<bool> &stop_flag, ThreadStats &stats,
-                   RateLimiter *rate_limiter, int thread_id) {
+                   RateLimiter *rate_limiter, int thread_id,
+                   size_t cpu_workload_size) {
   std::vector<char> local_buffer(block_size);
   size_t offset = 0;
 
@@ -220,12 +229,22 @@ void reader_thread(void *buffer, size_t buffer_size, size_t block_size,
     // Update statistics
     stats.bytes_processed += block_size;
     stats.operations++;
+
+    if (cpu_workload_size > 0) {
+      size_t work = std::min(cpu_workload_size, block_size);
+      size_t hash_val = 0;
+      for (size_t j = 0; j < work; ++j) {
+        hash_val = hash_val * 1315423911ull + static_cast<unsigned char>(local_buffer[j]);
+      }
+      stats.cpu_hash ^= hash_val;
+    }
   }
 }
 
 void writer_thread(void *buffer, size_t buffer_size, size_t block_size,
                    std::atomic<bool> &stop_flag, ThreadStats &stats,
-                   RateLimiter *rate_limiter, int thread_id) {
+                   RateLimiter *rate_limiter, int thread_id,
+                   size_t cpu_workload_size) {
   std::vector<char> local_buffer(block_size, 'W'); // Fill with 'W' for writers
   size_t offset = 0;
 
@@ -252,6 +271,15 @@ void writer_thread(void *buffer, size_t buffer_size, size_t block_size,
     // Update statistics
     stats.bytes_processed += block_size;
     stats.operations++;
+
+    if (cpu_workload_size > 0) {
+      size_t work = std::min(cpu_workload_size, block_size);
+      size_t hash_val = 0;
+      for (size_t j = 0; j < work; ++j) {
+        hash_val = hash_val * 1315423911ull + static_cast<unsigned char>(local_buffer[j]);
+      }
+      stats.cpu_hash ^= hash_val;
+    }
   }
 }
 
@@ -481,7 +509,7 @@ int main(int argc, char *argv[]) {
         threads.emplace_back(reader_thread, buffer, config.buffer_size,
                              config.block_size, std::ref(stop_flag),
                              std::ref(thread_stats[i]), read_limiter.get(),
-                             reader_id);
+                             reader_id, config.cpu_workload_size);
       }
 
       // 为写线程分配奇数ID (1, 3, 5...)
@@ -490,7 +518,8 @@ int main(int argc, char *argv[]) {
         threads.emplace_back(writer_thread, buffer, config.buffer_size,
                              config.block_size, std::ref(stop_flag),
                              std::ref(thread_stats[num_readers + i]),
-                             write_limiter.get(), writer_id);
+                             write_limiter.get(), writer_id,
+                             config.cpu_workload_size);
       }
     } else {
       // Open the device

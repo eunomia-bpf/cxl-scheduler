@@ -8,6 +8,7 @@ double_bandwidth_thread
 *.obj
 *.ko
 *.elf
+venv/
 
 # Shared libraries
 *.so
