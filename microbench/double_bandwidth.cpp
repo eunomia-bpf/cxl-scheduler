@@ -5,6 +5,7 @@
  * the ratio of readers to writers, simulating bidirectional traffic.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -13,13 +14,13 @@
 #include <getopt.h>
 #include <iostream>
 #include <mutex>
+#include <numa.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <algorithm>
 
 // 添加gettid函数，用于获取Linux线程ID
 pid_t gettid() { return syscall(SYS_gettid); }
@@ -28,14 +29,15 @@ pid_t gettid() { return syscall(SYS_gettid); }
 constexpr size_t DEFAULT_BUFFER_SIZE = 1 * 1024 * 1024 * 1024UL; // 1GB
 constexpr size_t DEFAULT_BLOCK_SIZE = 4096;                      // 4KB
 constexpr int DEFAULT_DURATION = 60;                             // seconds
-constexpr int DEFAULT_NUM_THREADS = 500;      // total threads
+constexpr int DEFAULT_NUM_THREADS = 500;    // total threads
 constexpr float DEFAULT_READ_RATIO = 0.5;   // 50% readers, 50% writers
 constexpr size_t DEFAULT_MAX_BANDWIDTH = 0; // 0 means unlimited (MB/s)
+constexpr int DEFAULT_NUMA_NODE = 1;        // Default NUMA node
 
 struct ThreadStats {
   size_t bytes_processed = 0;
   size_t operations = 0;
-  int thread_id = 0; // 新增：线程ID
+  int thread_id = 0;   // 新增：线程ID
   size_t cpu_hash = 0; // Added for CPU workload hashing
 };
 
@@ -107,7 +109,9 @@ struct BenchmarkConfig {
   std::string device_path;
   bool use_mmap = false;
   bool is_cxl_mem = false;
-  size_t cpu_workload_size = 0; // CPU workload size in bytes (default: 0)
+  size_t cpu_workload_size = 0;      // CPU workload size in bytes (default: 0)
+  int numa_node = DEFAULT_NUMA_NODE; // NUMA node to bind to
+  bool enable_numa = true;           // Enable NUMA binding
 };
 
 void print_usage(const char *prog_name) {
@@ -128,7 +132,11 @@ void print_usage(const char *prog_name) {
          "memory is used)\n"
       << "  -m, --mmap                Use mmap instead of read/write syscalls\n"
       << "  -c, --cxl-mem             Indicate the device is CXL memory\n"
-      << "  -w, --cpu-workload=SIZE    CPU workload size in bytes (default: 0)\n"
+      << "  -w, --cpu-workload=SIZE    CPU workload size in bytes (default: "
+         "0)\n"
+      << "  -N, --numa-node=NODE      Bind threads to a specific NUMA node "
+         "(default: 1)\n"
+      << "  -n, --no-numa             Disable NUMA binding\n"
       << "  -h, --help                Show this help message\n";
 }
 
@@ -146,11 +154,13 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
       {"mmap", no_argument, 0, 'm'},
       {"cxl-mem", no_argument, 0, 'c'},
       {"cpu-workload", required_argument, 0, 'w'},
+      {"numa-node", optional_argument, 0, 'N'},
+      {"no-numa", no_argument, 0, 'n'},
       {"help", no_argument, 0, 'h'},
       {0, 0, 0, 0}};
 
   int opt, option_index = 0;
-  while ((opt = getopt_long(argc, argv, "b:s:t:d:r:B:D:mchw:", long_options,
+  while ((opt = getopt_long(argc, argv, "b:s:t:d:r:B:D:mchw:N:n", long_options,
                             &option_index)) != -1) {
     switch (opt) {
     case 'b':
@@ -187,6 +197,12 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
     case 'w':
       config.cpu_workload_size = std::stoull(optarg);
       break;
+    case 'N':
+      config.numa_node = std::stoi(optarg);
+      break;
+    case 'n':
+      config.enable_numa = false;
+      break;
     case 'h':
       print_usage(argv[0]);
       exit(0);
@@ -202,16 +218,28 @@ BenchmarkConfig parse_args(int argc, char *argv[]) {
 void reader_thread(void *buffer, size_t buffer_size, size_t block_size,
                    std::atomic<bool> &stop_flag, ThreadStats &stats,
                    RateLimiter *rate_limiter, int thread_id,
-                   size_t cpu_workload_size) {
+                   size_t cpu_workload_size, int numa_node, bool enable_numa) {
   std::vector<char> local_buffer(block_size);
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind reader thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "Reader thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -234,7 +262,8 @@ void reader_thread(void *buffer, size_t buffer_size, size_t block_size,
       size_t work = std::min(cpu_workload_size, block_size);
       size_t hash_val = 0;
       for (size_t j = 0; j < work; ++j) {
-        hash_val = hash_val * 1315423911ull + static_cast<unsigned char>(local_buffer[j]);
+        hash_val = hash_val * 1315423911ull +
+                   static_cast<unsigned char>(local_buffer[j]);
       }
       stats.cpu_hash ^= hash_val;
     }
@@ -244,16 +273,28 @@ void reader_thread(void *buffer, size_t buffer_size, size_t block_size,
 void writer_thread(void *buffer, size_t buffer_size, size_t block_size,
                    std::atomic<bool> &stop_flag, ThreadStats &stats,
                    RateLimiter *rate_limiter, int thread_id,
-                   size_t cpu_workload_size) {
+                   size_t cpu_workload_size, int numa_node, bool enable_numa) {
   std::vector<char> local_buffer(block_size, 'W'); // Fill with 'W' for writers
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind writer thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "Writer thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -276,7 +317,8 @@ void writer_thread(void *buffer, size_t buffer_size, size_t block_size,
       size_t work = std::min(cpu_workload_size, block_size);
       size_t hash_val = 0;
       for (size_t j = 0; j < work; ++j) {
-        hash_val = hash_val * 1315423911ull + static_cast<unsigned char>(local_buffer[j]);
+        hash_val = hash_val * 1315423911ull +
+                   static_cast<unsigned char>(local_buffer[j]);
       }
       stats.cpu_hash ^= hash_val;
     }
@@ -285,16 +327,29 @@ void writer_thread(void *buffer, size_t buffer_size, size_t block_size,
 
 void device_reader_thread(int fd, size_t file_size, size_t block_size,
                           std::atomic<bool> &stop_flag, ThreadStats &stats,
-                          RateLimiter *rate_limiter, int thread_id) {
+                          RateLimiter *rate_limiter, int thread_id,
+                          int numa_node, bool enable_numa) {
   std::vector<char> local_buffer(block_size);
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind device reader thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "Device reader thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -324,16 +379,29 @@ void device_reader_thread(int fd, size_t file_size, size_t block_size,
 
 void device_writer_thread(int fd, size_t file_size, size_t block_size,
                           std::atomic<bool> &stop_flag, ThreadStats &stats,
-                          RateLimiter *rate_limiter, int thread_id) {
+                          RateLimiter *rate_limiter, int thread_id,
+                          int numa_node, bool enable_numa) {
   std::vector<char> local_buffer(block_size, 'W');
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind device writer thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "Device writer thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -362,16 +430,29 @@ void device_writer_thread(int fd, size_t file_size, size_t block_size,
 
 void mmap_reader_thread(void *mapped_area, size_t file_size, size_t block_size,
                         std::atomic<bool> &stop_flag, ThreadStats &stats,
-                        RateLimiter *rate_limiter, int thread_id) {
+                        RateLimiter *rate_limiter, int thread_id, int numa_node,
+                        bool enable_numa) {
   std::vector<char> local_buffer(block_size);
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind MMAP reader thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "MMAP reader thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -394,16 +475,29 @@ void mmap_reader_thread(void *mapped_area, size_t file_size, size_t block_size,
 
 void mmap_writer_thread(void *mapped_area, size_t file_size, size_t block_size,
                         std::atomic<bool> &stop_flag, ThreadStats &stats,
-                        RateLimiter *rate_limiter, int thread_id) {
+                        RateLimiter *rate_limiter, int thread_id, int numa_node,
+                        bool enable_numa) {
   std::vector<char> local_buffer(block_size, 'W');
   size_t offset = 0;
 
   // 保存线程ID用于调度和统计
   stats.thread_id = thread_id;
 
+  // NUMA binding
+  if (enable_numa) {
+    if (numa_run_on_node(numa_node) != 0) {
+      std::cerr << "Warning: Failed to bind MMAP writer thread " << thread_id
+                << " to NUMA node " << numa_node << ": " << strerror(errno)
+                << std::endl;
+    }
+  }
+
   // 打印线程ID以便调试
   std::cout << "MMAP writer thread started with ID: " << thread_id
-            << " (TID: " << gettid() << ")" << std::endl;
+            << " (TID: " << gettid() << ")"
+            << (enable_numa ? " [NUMA node " + std::to_string(numa_node) + "]"
+                            : "")
+            << std::endl;
 
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Wait for rate limiter tokens
@@ -426,6 +520,26 @@ void mmap_writer_thread(void *mapped_area, size_t file_size, size_t block_size,
 
 int main(int argc, char *argv[]) {
   BenchmarkConfig config = parse_args(argc, argv);
+  config.numa_node=1;
+  // Initialize and validate NUMA if enabled
+  if (config.enable_numa) {
+    if (numa_available() == -1) {
+      std::cerr
+          << "NUMA is not available on this system. Disabling NUMA binding."
+          << std::endl;
+      config.enable_numa = false;
+    } else {
+      int max_node = numa_max_node();
+      if (config.numa_node > max_node) {
+        std::cerr << "Error: NUMA node " << config.numa_node
+                  << " does not exist. Maximum node is " << max_node
+                  << std::endl;
+        return 1;
+      }
+      std::cout << "NUMA initialized successfully. Available nodes: 0-"
+                << max_node << std::endl;
+    }
+  }
 
   // Calculate reader and writer thread counts
   int num_readers = static_cast<int>(config.num_threads * config.read_ratio);
@@ -479,6 +593,13 @@ int main(int argc, char *argv[]) {
     std::cout << "Using system memory for testing" << std::endl;
   }
 
+  if (config.enable_numa) {
+    std::cout << "NUMA binding: Enabled, binding threads to node " << config.numa_node
+              << std::endl;
+  } else {
+    std::cout << "NUMA binding: Disabled" << std::endl;
+  }
+
   std::cout << "\nStarting benchmark..." << std::endl;
 
   // Prepare threads and resources
@@ -509,17 +630,18 @@ int main(int argc, char *argv[]) {
         threads.emplace_back(reader_thread, buffer, config.buffer_size,
                              config.block_size, std::ref(stop_flag),
                              std::ref(thread_stats[i]), read_limiter.get(),
-                             reader_id, config.cpu_workload_size);
+                             reader_id, config.cpu_workload_size,
+                             config.numa_node, config.enable_numa);
       }
 
       // 为写线程分配奇数ID (1, 3, 5...)
       for (int i = 0; i < num_writers; i++) {
         int writer_id = i * 2 + 1; // 生成奇数ID: 1, 3, 5, ...
-        threads.emplace_back(writer_thread, buffer, config.buffer_size,
-                             config.block_size, std::ref(stop_flag),
-                             std::ref(thread_stats[num_readers + i]),
-                             write_limiter.get(), writer_id,
-                             config.cpu_workload_size);
+        threads.emplace_back(
+            writer_thread, buffer, config.buffer_size, config.block_size,
+            std::ref(stop_flag), std::ref(thread_stats[num_readers + i]),
+            write_limiter.get(), writer_id, config.cpu_workload_size,
+            config.numa_node, config.enable_numa);
       }
     } else {
       // Open the device
@@ -548,17 +670,18 @@ int main(int argc, char *argv[]) {
           threads.emplace_back(mmap_reader_thread, mapped_area,
                                config.buffer_size, config.block_size,
                                std::ref(stop_flag), std::ref(thread_stats[i]),
-                               read_limiter.get(), reader_id);
+                               read_limiter.get(), reader_id, config.numa_node,
+                               config.enable_numa);
         }
 
         // 为写线程分配奇数ID
         for (int i = 0; i < num_writers; i++) {
           int writer_id = i * 2 + 1; // 生成奇数ID: 1, 3, 5, ...
-          threads.emplace_back(mmap_writer_thread, mapped_area,
-                               config.buffer_size, config.block_size,
-                               std::ref(stop_flag),
-                               std::ref(thread_stats[num_readers + i]),
-                               write_limiter.get(), writer_id);
+          threads.emplace_back(
+              mmap_writer_thread, mapped_area, config.buffer_size,
+              config.block_size, std::ref(stop_flag),
+              std::ref(thread_stats[num_readers + i]), write_limiter.get(),
+              writer_id, config.numa_node, config.enable_numa);
         }
       } else {
         // Use read/write for device access
@@ -568,7 +691,7 @@ int main(int argc, char *argv[]) {
           threads.emplace_back(device_reader_thread, fd, config.buffer_size,
                                config.block_size, std::ref(stop_flag),
                                std::ref(thread_stats[i]), read_limiter.get(),
-                               reader_id);
+                               reader_id, config.numa_node, config.enable_numa);
         }
 
         // 为写线程分配奇数ID
@@ -577,7 +700,8 @@ int main(int argc, char *argv[]) {
           threads.emplace_back(device_writer_thread, fd, config.buffer_size,
                                config.block_size, std::ref(stop_flag),
                                std::ref(thread_stats[num_readers + i]),
-                               write_limiter.get(), writer_id);
+                               write_limiter.get(), writer_id, config.numa_node,
+                               config.enable_numa);
         }
       }
     }

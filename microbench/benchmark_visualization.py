@@ -25,9 +25,9 @@ TEST1_READ_RATIOS = np.arange(0.05, 1.0, 0.05)  # 0.05 to 0.95
 TEST2_THREAD_NUMBERS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1000]
 TEST2_READ_RATIO = 0.5
 
-DURATION = 60  # seconds per test
-BLOCK_SIZE = 4096  # 4KB
-BUFFER_SIZE = "1G"  # 1GB
+DURATION = 5  # seconds per test
+BLOCK_SIZE = 64  # 64B
+BUFFER_SIZE = 8*1024*1024*1024  # 8GB
 DEVICE = ""  # Empty for mmap mode
 USE_MMAP = True  # Use memory mapping instead of device access
 
@@ -47,8 +47,9 @@ def run_benchmark(num_threads, read_ratio):
         "-t", str(num_threads),
         "-r", f"{read_ratio:.2f}",
         "-d", str(DURATION),
-        "-b", str(BLOCK_SIZE),
-        "-s", BUFFER_SIZE
+        "-s", str(BLOCK_SIZE),
+        "-b", str(BUFFER_SIZE),
+        "-N", "1"
     ]
     
     if USE_MMAP:
